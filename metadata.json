@@ -1,0 +1,6 @@
+{
+  "name": "ReeloAI",
+  "description": "Short-video social media app with a powerful admin panel, real-time feed, chats, coin rewards, and AI analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
