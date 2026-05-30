@@ -193,19 +193,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val appThemeColor = MutableStateFlow("Crimson") // Crimson, Oceanic, Emerald, Gold
     val apiCredentialsKey = MutableStateFlow("AI_STUDIO_DEFAULT")
 
-    // --- Supabase Cloud Database & Storage Settings ---
-    val appDatabaseMode = MutableStateFlow("sqlite_local") // sqlite_local, supabase_cloud
-    val supabaseUrl = MutableStateFlow("https://your-project-id.supabase.co")
-    val supabaseAnonKey = MutableStateFlow("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_anon_key_string")
+     // --- Supabase Cloud Database & Storage Settings ---
+    val appDatabaseMode = MutableStateFlow("supabase_cloud") // sqlite_local, supabase_cloud
+    val supabaseUrl = MutableStateFlow("https://cptquthczkjghjwmbojg.supabase.co")
+    val supabaseAnonKey = MutableStateFlow("sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8")
     val supabaseBucketName = MutableStateFlow("reelo-media-storage")
     private val _supabaseConnectionStatus = MutableStateFlow("Disconnected")
     val supabaseConnectionStatus: StateFlow<String> = _supabaseConnectionStatus.asStateFlow()
+
+    // --- Global Reward Ad Popup States ---
+    val showAdWatchDialog = MutableStateFlow(false)
+    val adWatchReward = MutableStateFlow(0)
+    val adWatchTaskId = MutableStateFlow<String?>(null)
 
     fun updateSupabaseConfig(url: String, key: String, bucket: String, mode: String) {
         supabaseUrl.value = url
         supabaseAnonKey.value = key
         supabaseBucketName.value = bucket
         appDatabaseMode.value = mode
+
+        viewModelScope.launch {
+            val current = repository.getAdSettingsSnapshot() ?: AdSettingsEntity()
+            val updated = current.copy(
+                supabaseUrl = url,
+                supabaseAnonKey = key,
+                supabaseBucketName = bucket,
+                appDatabaseMode = mode
+            )
+            repository.updateAdSettings(updated)
+        }
+    }
+
+    fun watchRewardedAd(reward: Int, taskId: String? = null) {
+        adWatchReward.value = reward
+        adWatchTaskId.value = taskId
+        showAdWatchDialog.value = true
+    }
+
+    fun completeRewardedAdWatch() {
+        val reward = adWatchReward.value
+        val taskId = adWatchTaskId.value
+        showAdWatchDialog.value = false
+        if (reward > 0) {
+            if (taskId != null) {
+                markTaskComplete(taskId)
+                android.widget.Toast.makeText(getApplication(), "Congratulations! Task completed! Received +$reward coins! 🪙", android.widget.Toast.LENGTH_LONG).show()
+                showSystemNotification("Task Completed! 🪙", "Congratulations! You completed your task and received $reward coins.")
+            } else {
+                triggerCoinEarn(reward, "Reward: Watched Sponsored Video Ad!")
+                android.widget.Toast.makeText(getApplication(), "Congratulations! Received +$reward coins! 🪙", android.widget.Toast.LENGTH_LONG).show()
+                showSystemNotification("Coins Claimed! 🪙", "Congratulations! You watched a sponsored ad and received $reward coins.")
+            }
+        }
+        adWatchReward.value = 0
+        adWatchTaskId.value = null
+    }
+
+    fun showSystemNotification(title: String, messageText: String) {
+        try {
+            val context = getApplication<Application>()
+            val notificationManager = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val channelId = "reelo_updates_channel"
+            
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    channelId,
+                    "Reelo AI Alerts",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Alerts for coin rewards, admin updates, and follows"
+                }
+                notificationManager.createNotificationChannel(channel)
+            }
+
+            val builder = androidx.core.app.NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(messageText)
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+
+            notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     fun testSupabaseConnection() {
@@ -233,9 +304,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        // Collectpersistent settings with auto-update
+        viewModelScope.launch {
+            repository.adSettings.collect { settings ->
+                if (settings != null) {
+                    appCustomName.value = settings.appCustomName
+                    appMaintenanceMode.value = settings.appMaintenanceMode
+                    appRegistrationsEnabled.value = settings.appRegistrationsEnabled
+                    appUploadsEnabled.value = settings.appUploadsEnabled
+                    appThemeColor.value = settings.appThemeColor
+                    appDatabaseMode.value = "supabase_cloud"
+                    supabaseUrl.value = "https://cptquthczkjghjwmbojg.supabase.co"
+                    supabaseAnonKey.value = "sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8"
+                    supabaseBucketName.value = settings.supabaseBucketName
+                }
+            }
+        }
+
         // Seed data in background
         viewModelScope.launch {
             repository.populateInitialDataIfEmpty()
+            // Ensure remote sync of tables
+            repository.syncAllTablesFromSupabase("https://cptquthczkjghjwmbojg.supabase.co", "sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8")
+        }
+
+        // Real-time background sync loop (every 4 seconds)
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(4000)
+                if (_isLoggedIn.value) {
+                    try {
+                        repository.syncAllTablesFromSupabase("https://cptquthczkjghjwmbojg.supabase.co", "sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8")
+                    } catch (e: Exception) {
+                        // Suppress logs for transient network failures
+                    }
+                }
+            }
         }
     }
 
@@ -268,30 +372,115 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         navigateTo("login")
     }
 
-    fun simulateLogin(username: String) {
+    fun registerNewUser(username: String, fullName: String, passwordText: String, onResult: (Boolean, String) -> Unit) {
         viewModelScope.launch {
-            val exist = allUsers.value.firstOrNull { it.username == username.lowercase().trim() }
-            if (exist != null) {
-                _currentUserId.value = exist.id
-                _isLoggedIn.value = true
-                navigateTo("feed")
+            val trimmed = username.lowercase().trim()
+            if (trimmed.isBlank() || fullName.isBlank() || passwordText.isBlank()) {
+                onResult(false, "Please fill in all fields!")
+                return@launch
+            }
+            
+            val url = supabaseUrl.value
+            val key = supabaseAnonKey.value
+            
+            // Check if username already exists locally
+            val localExist = repository.getUserByUsername(trimmed)
+            if (localExist != null) {
+                onResult(false, "Username already taken!")
+                return@launch
+            }
+            
+            // Query remote Supabase
+            val remoteUsersJson = repository.makeSupabaseRequest(url, key, "users", "GET", query = "?username=eq.$trimmed")
+            val remoteUsers = if (remoteUsersJson != null) repository.parseSupabaseUsers(remoteUsersJson) else emptyList()
+            if (remoteUsers.any { it.username == trimmed }) {
+                onResult(false, "Username already exists on server!")
+                return@launch
+            }
+            
+            // Create user
+            val newId = UUID.randomUUID().toString()
+            val newUser = UserEntity(
+                id = newId,
+                username = trimmed,
+                fullName = fullName,
+                avatarUrl = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80",
+                isVerified = false,
+                isPremium = false,
+                coinBalance = 100,
+                email = "$trimmed@reelo.ai",
+                password = passwordText
+            )
+            repository.insertUser(newUser)
+            if (url.isNotBlank() && url.startsWith("http")) {
+                repository.syncUserToSupabase(url, key, newUser)
+            }
+            
+            _currentUserId.value = newId
+            _isLoggedIn.value = true
+            
+            launch {
+                repository.syncAllTablesFromSupabase(url, key)
+            }
+            onResult(true, "Registration successful! Welcome to ReeloAI ✨")
+            navigateTo("feed")
+        }
+    }
+
+    fun loginWithPassword(username: String, passwordText: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val trimmed = username.lowercase().trim()
+            if (trimmed.isBlank() || passwordText.isBlank()) {
+                onResult(false, "Please enter your username and password!")
+                return@launch
+            }
+            
+            val url = supabaseUrl.value
+            val key = supabaseAnonKey.value
+            
+            // Fetch remote or check local
+            val remoteUsersJson = repository.makeSupabaseRequest(url, key, "users", "GET", query = "?username=eq.$trimmed")
+            val remoteUsers = if (remoteUsersJson != null) repository.parseSupabaseUsers(remoteUsersJson) else emptyList()
+            
+            val foundUser = remoteUsers.firstOrNull { it.username == trimmed }
+                ?: repository.getUserByUsername(trimmed)
+                
+            if (foundUser != null) {
+                if (foundUser.password == passwordText) {
+                    repository.insertUser(foundUser) // Cache locally
+                    _currentUserId.value = foundUser.id
+                    _isLoggedIn.value = true
+                    
+                    launch {
+                        repository.syncAllTablesFromSupabase(url, key)
+                    }
+                    onResult(true, "Welcome back, ${foundUser.fullName}! 👋")
+                    navigateTo("feed")
+                } else {
+                    onResult(false, "Incorrect password!")
+                }
             } else {
-                // Register new simulated user
-                val newId = UUID.randomUUID().toString()
-                val newUser = UserEntity(
-                    id = newId,
-                    username = username.lowercase().trim(),
-                    fullName = username.replaceFirstChar { it.uppercase() },
-                    avatarUrl = "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=200&q=80",
-                    isVerified = false,
-                    isPremium = false,
-                    coinBalance = 100,
-                    email = "$username@reelo.ai"
-                )
-                repository.insertUser(newUser)
-                _currentUserId.value = newId
-                _isLoggedIn.value = true
-                navigateTo("feed")
+                onResult(false, "User not found! Please register.")
+            }
+        }
+    }
+
+    fun updateProfile(fullName: String, username: String, bio: String, avatarUrl: String) {
+        viewModelScope.launch {
+            val me = currentUser.value ?: return@launch
+            val trimmedUsername = username.lowercase().trim()
+            if (trimmedUsername.isBlank() || fullName.isBlank()) {
+                return@launch
+            }
+            val updated = me.copy(
+                fullName = fullName,
+                username = trimmedUsername,
+                bio = bio,
+                avatarUrl = if (avatarUrl.isNotBlank()) avatarUrl else me.avatarUrl
+            )
+            repository.updateUser(updated)
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncUserToSupabase(supabaseUrl.value, supabaseAnonKey.value, updated)
             }
         }
     }
@@ -310,6 +499,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.toggleLike(videoId, _currentUserId.value)
             // Perform simulated coin watch bonus if user likes it
             triggerCoinEarn(5, "Bonus: Watching and liking content!")
+        }
+    }
+
+    fun shareVideo(videoId: String, context: android.content.Context) {
+        viewModelScope.launch {
+            val video = activeVideos.value.find { it.id == videoId } ?: return@launch
+            val updatedVideo = video.copy(sharesCount = video.sharesCount + 1)
+            repository.updateVideo(updatedVideo)
+            
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncVideoToSupabase(supabaseUrl.value, supabaseAnonKey.value, updatedVideo)
+            }
+            
+            triggerCoinEarn(5, "Bonus: Shared video!")
+            
+            try {
+                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(android.content.Intent.EXTRA_SUBJECT, "Check out this video on ReeloAI!")
+                    putExtra(android.content.Intent.EXTRA_TEXT, "Watch @${video.username}'s stream on ReeloAI: ${video.caption}\nStream Link: ${video.videoUrl}")
+                }
+                val chooser = android.content.Intent.createChooser(intent, "Share Video via")
+                chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(chooser)
+            } catch (e: Exception) {
+                // Keep it robust
+            }
         }
     }
 
@@ -334,8 +550,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             // Update local videos comment count
             val video = repository.getVideo(videoId)
-            if (video != null) {
-                repository.updateVideo(video.copy(commentsCount = video.commentsCount + 1))
+            val updatedVideo = video?.copy(commentsCount = video.commentsCount + 1)
+            if (updatedVideo != null) {
+                repository.updateVideo(updatedVideo)
+                showSystemNotification("New Comment Alert 💬", "${user.username} commented on video: \"$text\"")
+            }
+
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncCommentToSupabase(supabaseUrl.value, supabaseAnonKey.value, comment)
+                if (updatedVideo != null) {
+                    repository.syncVideoToSupabase(supabaseUrl.value, supabaseAnonKey.value, updatedVideo)
+                }
             }
 
             if (isSpam) {
@@ -361,6 +586,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleFollowCreator(creatorId: String) {
         viewModelScope.launch {
             repository.toggleFollow(_currentUserId.value, creatorId)
+            val creator = repository.getUser(creatorId)
+            if (creator != null) {
+                showSystemNotification("New Follower Alert 👤", "${creator.username} started following you!")
+            }
             triggerCoinEarn(15, "Bonus: Following content creator!")
             markTaskComplete("task_follow")
         }
@@ -378,18 +607,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 text = text
             )
             repository.sendMessage(message)
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncMessageToSupabase(supabaseUrl.value, supabaseAnonKey.value, message)
+            }
 
             // Simulating an AI-assisted direct replies or smart echo loop
             val partner = repository.getUser(partnerId)
             val myCaption = text
             kotlinx.coroutines.delay(1000)
             val systemReply = repository.generateAICaption("Reply to the message: \"$myCaption\" from ${partner?.username}. Keep it short, casual, and supportive as a creator.")
-            repository.sendMessage(MessageEntity(
+            val replyMessage = MessageEntity(
                 id = UUID.randomUUID().toString(),
                 senderId = partnerId,
                 receiverId = meId,
                 text = systemReply
-            ))
+            )
+            repository.sendMessage(replyMessage)
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncMessageToSupabase(supabaseUrl.value, supabaseAnonKey.value, replyMessage)
+            }
+            showSystemNotification("New Message from ${partner?.fullName ?: "Creator"} ✉️", systemReply)
         }
     }
 
@@ -397,6 +634,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun triggerCoinEarn(amount: Int, reason: String) {
         viewModelScope.launch {
             repository.adjustUserCoins(_currentUserId.value, amount, reason)
+        }
+    }
+
+    fun giftCoinsToCreator(amount: Int, creatorId: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val meId = _currentUserId.value
+            if (meId.isBlank() || creatorId.isBlank()) {
+                onResult(false, "Error processing gift")
+                return@launch
+            }
+            if (meId == creatorId) {
+                onResult(false, "You cannot gift coins to yourself!")
+                return@launch
+            }
+            val meUser = repository.getUser(meId)
+            if (meUser == null) {
+                onResult(false, "User not found")
+                return@launch
+            }
+            if (meUser.coinBalance < amount) {
+                onResult(false, "Insufficient balance! Watch free ads to earn more 🪙")
+                return@launch
+            }
+            // Deduct
+            repository.adjustUserCoins(meId, -amount, "Sent gift of $amount coins")
+            // Giver updates coins to creator's earnings
+            val creator = repository.getUser(creatorId)
+            if (creator != null) {
+                repository.adjustUserCoins(creatorId, amount, "Received gift list from ${meUser.username}")
+            }
+            onResult(true, "Awesome! Sent $amount coins to creator! 🎁")
         }
     }
 
@@ -482,7 +750,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.insertVideo(newVid)
 
             // Update user's video count
-            repository.updateUser(user.copy(videoCount = user.videoCount + 1))
+            val updatedUser = user.copy(videoCount = user.videoCount + 1)
+            repository.updateUser(updatedUser)
+
+            if (appDatabaseMode.value == "supabase_cloud") {
+                repository.syncVideoToSupabase(supabaseUrl.value, supabaseAnonKey.value, newVid)
+                repository.syncUserToSupabase(supabaseUrl.value, supabaseAnonKey.value, updatedUser)
+            }
 
             // Increase analytics metrics
             val an = repository.getAnalyticsSnapshot() ?: AnalyticsSnapshotEntity()
@@ -492,6 +766,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             triggerCoinEarn(50, "Content Creator Reward: Uploaded a short video!")
 
             android.widget.Toast.makeText(getApplication(), "Video Synthesized & Published Successfully! +50🪙", android.widget.Toast.LENGTH_LONG).show()
+            showSystemNotification("Publish Success! 🎬", "Your new short video has been synthesized & published! View it now.")
 
             // Focus playing index on newly added video so user can play it immediately
             _justUploadedVideoId.value = newVid.id
@@ -733,6 +1008,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ))
                 }
                 repository.logAdminAction("BROADCAST_NOTIFICATION", "Sent broadcast notification to all user bases: $title")
+                // Pop system level notification
+                showSystemNotification(title, messageText)
             } else {
                 // To particular user
                 val targetUser = repository.getUser(targetUserId)
@@ -746,6 +1023,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         text = "[$title] $messageText"
                     ))
                     repository.logAdminAction("DIRECT_NOTIFICATION", "Sent specific targeted alert message to ${targetUser.username}")
+                    // Pop system level notification
+                    showSystemNotification(title, messageText)
                 }
             }
         }

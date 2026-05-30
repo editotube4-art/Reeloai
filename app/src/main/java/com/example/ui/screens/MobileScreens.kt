@@ -38,6 +38,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.Orientation
 import coil.compose.AsyncImage
 import com.example.data.model.*
 import com.example.ui.theme.*
@@ -121,8 +124,10 @@ fun SplashScreen(onDismiss: () -> Unit) {
 @Composable
 fun LoginScreen(viewModel: MainViewModel) {
     var username by remember { mutableStateOf("") }
+    var fullName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isRegister by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Box(
         modifier = Modifier
@@ -132,7 +137,7 @@ fun LoginScreen(viewModel: MainViewModel) {
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.85f)
+                .fillMaxWidth(0.9f)
                 .background(DarkSurface, RoundedCornerShape(24.dp))
                 .border(1.dp, BorderColor, RoundedCornerShape(24.dp))
                 .padding(24.dp),
@@ -140,17 +145,34 @@ fun LoginScreen(viewModel: MainViewModel) {
         ) {
             Text(
                 text = if (isRegister) "Join ReeloAI" else "Welcome Back",
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 26.sp,
+                fontWeight = FontWeight.ExtraBold,
                 color = SoftWhite
             )
             Text(
-                text = "Verify your social identity on ReeloAI",
+                text = if (isRegister) "Create a real-time creator account" else "Verify your social identity on ReeloAI",
                 fontSize = 12.sp,
                 color = GraySub,
-                modifier = Modifier.padding(vertical = 4.dp)
+                modifier = Modifier.padding(vertical = 4.dp),
+                textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+
+            if (isRegister) {
+                OutlinedTextField(
+                    value = fullName,
+                    onValueChange = { fullName = it },
+                    label = { Text("Full Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = CrimsonPrimary,
+                        unfocusedBorderColor = BorderColor,
+                        focusedLabelColor = CrimsonPrimary
+                    )
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
 
             OutlinedTextField(
                 value = username,
@@ -171,8 +193,9 @@ fun LoginScreen(viewModel: MainViewModel) {
             OutlinedTextField(
                 value = password,
                 onValueChange = { password = it },
-                label = { Text("Password (simulated)") },
+                label = { Text("Password") },
                 singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth(),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -185,8 +208,14 @@ fun LoginScreen(viewModel: MainViewModel) {
 
             Button(
                 onClick = {
-                    if (username.isNotBlank()) {
-                        viewModel.simulateLogin(username)
+                    if (isRegister) {
+                        viewModel.registerNewUser(username, fullName, password) { success, message ->
+                            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        viewModel.loginWithPassword(username, password) { success, message ->
+                            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+                        }
                     }
                 },
                 modifier = Modifier
@@ -197,7 +226,8 @@ fun LoginScreen(viewModel: MainViewModel) {
             ) {
                 Text(
                     text = if (isRegister) "Register Account" else "Sign In",
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
                 )
             }
 
@@ -206,7 +236,7 @@ fun LoginScreen(viewModel: MainViewModel) {
                 Text(
                     text = if (isRegister) "Already have an account? Sign In" else "New to Reelo? Register Now",
                     color = CrimsonPrimary,
-                    fontSize = 12.sp
+                    fontSize = 13.sp
                 )
             }
         }
@@ -241,11 +271,32 @@ fun FeedScreen(viewModel: MainViewModel) {
             0
         }
         val video = activeVideos.getOrNull(safeIndex) ?: return
+        val context = androidx.compose.ui.platform.LocalContext.current
+
+        // Accumulate drag offsets for responsive gesture tracking
+        var dragAccumulator by remember(video.id) { mutableStateOf(0f) }
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .draggable(
+                    state = rememberDraggableState { delta ->
+                        dragAccumulator += delta
+                    },
+                    orientation = Orientation.Vertical,
+                    onDragStopped = {
+                        if (dragAccumulator < -100f) { // Swiped Up (Next Reel)
+                            if (currentVideoIndex < activeVideos.lastIndex) {
+                                viewModel.setFeedVideoIndex(currentVideoIndex + 1)
+                            }
+                        } else if (dragAccumulator > 100f) { // Swiped Down (Previous Reel)
+                            if (currentVideoIndex > 0) {
+                                viewModel.setFeedVideoIndex(currentVideoIndex - 1)
+                            }
+                        }
+                    }
+                )
         ) {
             // Interactive video content mockup (never buffers, fully responsive)
             InteractiveVideoMockup(
@@ -348,7 +399,7 @@ fun FeedScreen(viewModel: MainViewModel) {
                         if (video.sharingDisabled) {
                             showShareAlert = true
                         } else {
-                            viewModel.triggerCoinEarn(5, "Bonus: Shared video!")
+                            viewModel.shareVideo(video.id, context)
                         }
                     }
                 )
@@ -359,7 +410,9 @@ fun FeedScreen(viewModel: MainViewModel) {
                     label = "Gift",
                     color = GoldWarning,
                     onClick = {
-                        viewModel.triggerCoinEarn(10, "Rewarded: Gifted creator!")
+                        viewModel.giftCoinsToCreator(10, video.userId) { success, msg ->
+                            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     }
                 )
             }
@@ -503,7 +556,10 @@ fun FeedActionButton(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clickable { onClick() }
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 6.dp, vertical = 4.dp)
     ) {
         Box(
             modifier = Modifier
@@ -1211,6 +1267,7 @@ fun UploadScreen(viewModel: MainViewModel) {
 
 @Composable
 fun NotificationsScreen(viewModel: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val notifs by viewModel.notifications.collectAsState()
     val tasks by viewModel.allTasks.collectAsState()
     val user by viewModel.currentUser.collectAsState()
@@ -1288,8 +1345,11 @@ fun NotificationsScreen(viewModel: MainViewModel) {
                                 Text("Reelo AI Reward Coins", color = Color.Black.copy(0.7f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 Text("${user?.coinBalance ?: 0} 🪙", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
                             }
-                            IconButton(onClick = { viewModel.triggerCoinEarn(10, "Daily attendance bonus tapped!") }) {
-                                Icon(Icons.Filled.Store, "Get Coins", tint = Color.Black, modifier = Modifier.size(32.dp))
+                            IconButton(onClick = {
+                                android.widget.Toast.makeText(context, "Go to your Profile and click 'Earnings Wallet' to request a withdrawal securely 🪙", android.widget.Toast.LENGTH_LONG).show()
+                                viewModel.navigateTo("profile")
+                            }) {
+                                Icon(Icons.Filled.AccountBalanceWallet, "Wallet Settings", tint = Color.Black, modifier = Modifier.size(32.dp))
                             }
                         }
                     }
@@ -1308,7 +1368,33 @@ fun NotificationsScreen(viewModel: MainViewModel) {
                             .border(1.dp, if (isComplete) EmeraldGain.copy(0.3f) else BorderColor, RoundedCornerShape(14.dp))
                             .clickable {
                                 if (!isComplete) {
-                                    viewModel.markTaskComplete(task.id)
+                                    when (task.taskType) {
+                                        "watch_video" -> {
+                                            viewModel.watchRewardedAd(task.rewardCoins, task.id)
+                                        }
+                                        "daily_checkin" -> {
+                                            viewModel.watchRewardedAd(task.rewardCoins, task.id)
+                                        }
+                                        "comment" -> {
+                                            android.widget.Toast.makeText(context, "Explore any video reel in the Feed and drop a supportive comment to claim reward!", android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                        "refer" -> {
+                                            try {
+                                                val refName = user?.username ?: "friend"
+                                                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                                    type = "text/plain"
+                                                    putExtra(android.content.Intent.EXTRA_TEXT, "Hey! Download ReeloAI - watch awesome reels, upload short videos, and earn real money with me! Use my referral username: $refName 🪙")
+                                                }
+                                                context.startActivity(android.content.Intent.createChooser(intent, "Share Referral Link"))
+                                                viewModel.watchRewardedAd(task.rewardCoins, task.id)
+                                            } catch (e: Exception) {
+                                                viewModel.watchRewardedAd(task.rewardCoins, task.id)
+                                            }
+                                        }
+                                        else -> {
+                                            viewModel.watchRewardedAd(task.rewardCoins, task.id)
+                                        }
+                                    }
                                 }
                             }
                             .padding(16.dp)
@@ -1531,6 +1617,7 @@ fun ChatScreen(viewModel: MainViewModel) {
 
 @Composable
 fun ProfileScreen(viewModel: MainViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val user by viewModel.profileUser.collectAsState()
     val videos by viewModel.profileVideos.collectAsState()
     val currentUserId by viewModel.currentUserId.collectAsState()
@@ -1541,6 +1628,12 @@ fun ProfileScreen(viewModel: MainViewModel) {
     var paypalMailInput by remember { mutableStateOf("") }
     var coinsToWithdraw by remember { mutableStateOf("100") }
     val globalActiveVideos by viewModel.activeVideos.collectAsState()
+
+    var editExpanded by remember { mutableStateOf(false) }
+    var editFullName by remember(user) { mutableStateOf(user?.fullName ?: "") }
+    var editUsername by remember(user) { mutableStateOf(user?.username ?: "") }
+    var editBio by remember(user) { mutableStateOf(user?.bio ?: "") }
+    var editAvatarUrl by remember(user) { mutableStateOf(user?.avatarUrl ?: "") }
 
     Column(
         modifier = Modifier
@@ -1753,6 +1846,150 @@ fun ProfileScreen(viewModel: MainViewModel) {
                                 Text("Request Payout Approval", color = Color.Black, fontWeight = FontWeight.Bold)
                             }
                         }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            // Edit Profile Options (for editing Name, Bio, and Avatar link)
+            if (isMe) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(CrimsonPrimary.copy(alpha = 0.08f), RoundedCornerShape(16.dp))
+                        .border(1.dp, CrimsonPrimary, RoundedCornerShape(16.dp))
+                        .clickable { editExpanded = !editExpanded }
+                        .padding(14.dp)
+                ) {
+                    Column {
+                        Row(
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(Icons.Filled.Edit, "Edit Profile", tint = CrimsonPrimary)
+                                Column {
+                                    Text("Edit Account Profile", color = SoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text("Update display name, handle, avatar or bio", color = GraySub, fontSize = 10.sp)
+                                }
+                            }
+                            Icon(
+                                imageVector = if (editExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                contentDescription = "Expand Edit",
+                                tint = CrimsonPrimary
+                            )
+                        }
+
+                        if (editExpanded) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            HorizontalDivider(color = BorderColor)
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Text("Full Name", color = SoftWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = editFullName,
+                                onValueChange = { editFullName = it },
+                                placeholder = { Text("Alex Mercer") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary, unfocusedBorderColor = BorderColor),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text("Username Handle", color = SoftWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = editUsername,
+                                onValueChange = { editUsername = it },
+                                placeholder = { Text("curator") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary, unfocusedBorderColor = BorderColor),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text("Short Bio", color = SoftWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = editBio,
+                                onValueChange = { editBio = it },
+                                placeholder = { Text("Tell us about yourself...") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary, unfocusedBorderColor = BorderColor),
+                                maxLines = 10
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text("Avatar Image URL", color = SoftWhite, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = editAvatarUrl,
+                                onValueChange = { editAvatarUrl = it },
+                                placeholder = { Text("https://example.com/avatar.jpg") },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = CrimsonPrimary, unfocusedBorderColor = BorderColor),
+                                singleLine = true
+                            )
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            Button(
+                                onClick = {
+                                    if (editFullName.isNotBlank() && editUsername.isNotBlank()) {
+                                        viewModel.updateProfile(
+                                            fullName = editFullName,
+                                            username = editUsername,
+                                            bio = editBio,
+                                            avatarUrl = editAvatarUrl
+                                        )
+                                        android.widget.Toast.makeText(context, "Profile updated successfully! ✨", android.widget.Toast.LENGTH_SHORT).show()
+                                        editExpanded = false
+                                    } else {
+                                        android.widget.Toast.makeText(context, "Full Name & Username cannot be empty!", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = CrimsonPrimary)
+                            ) {
+                                Text("Save Profile Changes", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Admin Dashboard portal entry
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF0D1B2A), RoundedCornerShape(16.dp))
+                        .border(1.dp, CyberOcean, RoundedCornerShape(16.dp))
+                        .clickable { viewModel.navigateTo("admin_dashboard") }
+                        .padding(14.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Filled.Security, "Admin Panel", tint = CyberOcean)
+                            Column {
+                                Text("Super Admin Panel", color = SoftWhite, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text("Configure ads, monitor transactions & users", color = GraySub, fontSize = 10.sp)
+                            }
+                        }
+                        Icon(
+                            imageVector = Icons.Filled.LockOpen,
+                            contentDescription = "Enter Admin Panel",
+                            tint = CyberOcean,
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))

@@ -26,6 +26,9 @@ interface AppDao {
     @Query("DELETE FROM users WHERE id = :id")
     suspend fun deleteUserById(id: String)
 
+    @Query("SELECT * FROM users WHERE username = :username LIMIT 1")
+    suspend fun getUserByUsername(username: String): UserEntity?
+
 
     // --- Videos ---
     @Query("SELECT * FROM videos WHERE isHidden = 0 ORDER BY timestamp DESC")

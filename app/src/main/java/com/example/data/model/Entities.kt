@@ -22,7 +22,8 @@ data class UserEntity(
     val registeredAt: Long = System.currentTimeMillis(),
     val monetizationApproved: Boolean = false,
     val creatorEarningPercentage: Int = 80,
-    val creatorIncome: Int = 0
+    val creatorIncome: Int = 0,
+    val password: String = ""
 )
 
 @Entity(tableName = "videos")
@@ -141,7 +142,18 @@ data class AdSettingsEntity(
     val admobBannerId: String = "ca-app-pub-3940256099942544/6300978111",
     val admobInterstitialId: String = "ca-app-pub-3940256099942544/1033173712",
     val admobRewardedId: String = "ca-app-pub-3940256099942544/5224354917",
-    val adsterraSmartlinkUrl: String = "https://example.com/smartlink"
+    val adsterraSmartlinkUrl: String = "https://example.com/smartlink",
+    
+    // Persistent general configurations and Supabase keys
+    val appCustomName: String = "ReeloAI",
+    val appMaintenanceMode: Boolean = false,
+    val appRegistrationsEnabled: Boolean = true,
+    val appUploadsEnabled: Boolean = true,
+    val appThemeColor: String = "Crimson",
+    val appDatabaseMode: String = "supabase_cloud",
+    val supabaseUrl: String = "https://cptquthczkjghjwmbojg.supabase.co",
+    val supabaseAnonKey: String = "sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8",
+    val supabaseBucketName: String = "reelo-media-storage"
 )
 
 @Entity(tableName = "reports")

@@ -50,6 +50,291 @@ class AppRepository(private val appDao: AppDao) {
 
     private val geminiService = retrofit.create(GeminiApiService::class.java)
 
+    // --- Dynamic Supabase REST Connection helper & JSON robust Parser ---
+    suspend fun makeSupabaseRequest(
+        url: String,
+        anonKey: String,
+        table: String,
+        method: String,
+        jsonBody: String? = null,
+        query: String = ""
+    ): String? = withContext(Dispatchers.IO) {
+        if (url.isBlank() || url.contains("your-project-id") || anonKey.length < 20) {
+            return@withContext null
+        }
+        try {
+            val endpoint = if (url.endsWith("/")) "${url}rest/v1/$table$query" else "$url/rest/v1/$table$query"
+            val requestBuilder = okhttp3.Request.Builder()
+                .url(endpoint)
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", "Bearer $anonKey")
+                .addHeader("Content-Type", "application/json")
+                if (method.uppercase() == "POST" || method.uppercase() == "PATCH") {
+                    requestBuilder.addHeader("Prefer", "resolution=merge-duplicates")
+                }
+                
+            val req = when (method.uppercase()) {
+                "GET" -> requestBuilder.get()
+                "POST" -> {
+                    val body = jsonBody ?: "{}"
+                    requestBuilder.post(okhttp3.RequestBody.create("application/json".toMediaType(), body))
+                }
+                "PATCH" -> {
+                    val body = jsonBody ?: "{}"
+                    requestBuilder.patch(okhttp3.RequestBody.create("application/json".toMediaType(), body))
+                }
+                "DELETE" -> requestBuilder.delete()
+                else -> requestBuilder.get()
+            }.build()
+
+            val response = okHttpClient.newCall(req).execute()
+            val bodyStr = response.body?.string()
+            if (response.isSuccessful) {
+                bodyStr
+            } else {
+                android.util.Log.e("Supabase", "Request failed: code=${response.code}, body=$bodyStr")
+                null
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Supabase", "Exception: ${e.message}", e)
+            null
+        }
+    }
+
+    private fun escapeJsonString(str: String): String {
+        return "\"" + str.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r") + "\""
+    }
+
+    suspend fun syncUserToSupabase(url: String, anonKey: String, user: UserEntity) {
+        val json = """
+            {
+                "id": "${user.id}",
+                "username": "${user.username}",
+                "display_name": "${user.fullName}",
+                "avatar_url": "${user.avatarUrl}",
+                "coin_balance": ${user.coinBalance},
+                "can_upload": ${user.canUpload},
+                "is_verified": ${user.isVerified},
+                "is_premium": ${user.isPremium},
+                "password": "${user.password}"
+            }
+        """.trimIndent()
+        makeSupabaseRequest(url, anonKey, "users", "POST", json)
+    }
+
+    suspend fun syncVideoToSupabase(url: String, anonKey: String, video: VideoEntity) {
+        val json = """
+            {
+                "id": "${video.id}",
+                "user_id": "${video.userId}",
+                "username": "${video.username}",
+                "avatar_url": "${video.avatarUrl}",
+                "caption": ${escapeJsonString(video.caption)},
+                "video_url": "${video.videoUrl}",
+                "thumbnail_url": "${video.thumbnailUrl}",
+                "likes_count": ${video.likesCount},
+                "comments_count": ${video.commentsCount},
+                "shares_count": ${video.sharesCount},
+                "views_count": ${video.viewsCount},
+                "is_featured": ${video.isFeatured},
+                "comments_disabled": ${video.commentsDisabled},
+                "timestamp": ${video.timestamp}
+            }
+        """.trimIndent()
+        makeSupabaseRequest(url, anonKey, "videos", "POST", json)
+    }
+
+    suspend fun syncCommentToSupabase(url: String, anonKey: String, comment: CommentEntity) {
+        val json = """
+            {
+                "id": "${comment.id}",
+                "video_id": "${comment.videoId}",
+                "user_id": "${comment.userId}",
+                "username": "${comment.username}",
+                "avatar_url": "${comment.avatarUrl}",
+                "text": ${escapeJsonString(comment.text)},
+                "timestamp": ${comment.timestamp}
+            }
+        """.trimIndent()
+        makeSupabaseRequest(url, anonKey, "comments", "POST", json)
+    }
+
+    suspend fun syncMessageToSupabase(url: String, anonKey: String, msg: MessageEntity) {
+        val json = """
+            {
+                "id": "${msg.id}",
+                "sender_id": "${msg.senderId}",
+                "receiver_id": "${msg.receiverId}",
+                "content": ${escapeJsonString(msg.text)},
+                "timestamp": ${msg.timestamp}
+            }
+        """.trimIndent()
+        makeSupabaseRequest(url, anonKey, "messages", "POST", json)
+    }
+
+    fun parseSupabaseUsers(jsonStr: String): List<UserEntity> {
+        val list = mutableListOf<UserEntity>()
+        try {
+            val arr = org.json.JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val id = obj.optString("id", "")
+                val username = obj.optString("username", "")
+                val displayName = obj.optString("display_name", username)
+                val avatarUrl = obj.optString("avatar_url", "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde")
+                val coinBalance = obj.optInt("coin_balance", 100)
+                val canUpload = obj.optBoolean("can_upload", true)
+                val isVerified = obj.optBoolean("is_verified", false)
+                val isPremium = obj.optBoolean("is_premium", false)
+                val password = obj.optString("password", "")
+                
+                if (id.isNotBlank() && username.isNotBlank()) {
+                    list.add(UserEntity(
+                        id = id,
+                        username = username,
+                        fullName = displayName,
+                        avatarUrl = avatarUrl,
+                        coinBalance = coinBalance,
+                        canUpload = canUpload,
+                        isVerified = isVerified,
+                        isPremium = isPremium,
+                        password = password
+                    ))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Supabase", "parseUsers error: ${e.message}")
+        }
+        return list
+    }
+
+    fun parseSupabaseVideos(jsonStr: String): List<VideoEntity> {
+        val list = mutableListOf<VideoEntity>()
+        try {
+            val arr = org.json.JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val id = obj.optString("id", "")
+                val userId = obj.optString("user_id", "")
+                val username = obj.optString("username", "creator")
+                val avatarUrl = obj.optString("avatar_url", "https://images.unsplash.com/photo-1544005313-94ddf0286df2")
+                val caption = obj.optString("caption", "")
+                val videoUrl = obj.optString("video_url", "")
+                val thumbnailUrl = obj.optString("thumbnail_url", "")
+                val likes = obj.optInt("likes_count", 0)
+                val comments = obj.optInt("comments_count", 0)
+                val shares = obj.optInt("shares_count", 0)
+                val views = obj.optInt("views_count", 0)
+                val isFeatured = obj.optBoolean("is_featured", false)
+                val commentsDisabled = obj.optBoolean("comments_disabled", false)
+                val timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                
+                if (id.isNotBlank()) {
+                    list.add(VideoEntity(
+                        id = id,
+                        userId = userId,
+                        username = username,
+                        avatarUrl = avatarUrl,
+                        caption = caption,
+                        videoUrl = videoUrl,
+                        thumbnailUrl = thumbnailUrl,
+                        likesCount = likes,
+                        commentsCount = comments,
+                        sharesCount = shares,
+                        viewsCount = views,
+                        isFeatured = isFeatured,
+                        commentsDisabled = commentsDisabled,
+                        timestamp = timestamp
+                    ))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Supabase", "parseVideos error: ${e.message}")
+        }
+        return list
+    }
+
+    fun parseSupabaseComments(jsonStr: String): List<CommentEntity> {
+        val list = mutableListOf<CommentEntity>()
+        try {
+            val arr = org.json.JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val id = obj.optString("id", "")
+                val videoId = obj.optString("video_id", "")
+                val userId = obj.optString("user_id", "")
+                val username = obj.optString("username", "commenter")
+                val avatarUrl = obj.optString("avatar_url", "")
+                val text = obj.optString("text", "")
+                val timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                
+                if (id.isNotBlank()) {
+                    list.add(CommentEntity(
+                        id = id,
+                        videoId = videoId,
+                        userId = userId,
+                        username = username,
+                        avatarUrl = avatarUrl,
+                        text = text,
+                        timestamp = timestamp
+                    ))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Supabase", "parseComments error: ${e.message}")
+        }
+        return list
+    }
+
+    fun parseSupabaseMessages(jsonStr: String): List<MessageEntity> {
+        val list = mutableListOf<MessageEntity>()
+        try {
+            val arr = org.json.JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val id = obj.optString("id", "")
+                val senderId = obj.optString("sender_id", "")
+                val receiverId = obj.optString("receiver_id", "")
+                val content = obj.optString("content", "")
+                val timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                
+                if (id.isNotBlank()) {
+                    list.add(MessageEntity(
+                        id = id,
+                        senderId = senderId,
+                        receiverId = receiverId,
+                        text = content,
+                        timestamp = timestamp
+                    ))
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Supabase", "parseMessages error: ${e.message}")
+        }
+        return list
+    }
+
+    private fun extractJsonVal(json: String, key: String): String? {
+        val pattern = "\"$key\"\\s*:\\s*\"([^\"]+)\""
+        val match = Regex(pattern).find(json)
+        return match?.groupValues?.get(1)
+    }
+
+    private fun extractJsonIntVal(json: String, key: String, default: Int): Int {
+        val pattern = "\"$key\"\\s*:\\s*(\\d+)"
+        val match = Regex(pattern).find(json)
+        return match?.groupValues?.get(1)?.toIntOrNull() ?: default
+    }
+
+    private fun extractJsonBoolVal(json: String, key: String, default: Boolean): Boolean {
+        val pattern = "\"$key\"\\s*:\\s*(true|false)"
+        val match = Regex(pattern).find(json)
+        return match?.groupValues?.get(1)?.toBoolean() ?: default
+    }
+
     suspend fun generateAICaption(prompt: String): String = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.GEMINI_API_KEY
         if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
@@ -118,6 +403,7 @@ class AppRepository(private val appDao: AppDao) {
     val allUsers: Flow<List<UserEntity>> = appDao.getAllUsersFlow()
     fun getUserFlow(userId: String): Flow<UserEntity?> = appDao.getUserByIdFlow(userId)
     suspend fun getUser(userId: String): UserEntity? = appDao.getUserById(userId)
+    suspend fun getUserByUsername(username: String): UserEntity? = appDao.getUserByUsername(username)
     suspend fun insertUser(user: UserEntity) = appDao.insertUser(user)
     suspend fun updateUser(user: UserEntity) = appDao.updateUser(user)
     suspend fun deleteUser(userId: String) = appDao.deleteUserById(userId)
@@ -199,13 +485,17 @@ class AppRepository(private val appDao: AppDao) {
     suspend fun adjustUserCoins(userId: String, amount: Int, reason: String) {
         val user = appDao.getUserById(userId) ?: return
         val newBalance = maxOf(0, user.coinBalance + amount)
-        appDao.updateUser(user.copy(coinBalance = newBalance))
+        val updated = user.copy(coinBalance = newBalance)
+        appDao.updateUser(updated)
         appDao.insertTransaction(CoinTransactionEntity(
             id = UUID.randomUUID().toString(),
             userId = userId,
             amount = amount,
             description = reason
         ))
+        
+        // Ensure accurate server representation is synced immediately to our Supabase Cloud for remote admin monitoring
+        syncUserToSupabase("https://cptquthczkjghjwmbojg.supabase.co", "sb_publishable_IUsBYEYSv13T-IM2BqtDoQ_va_FKDH8", updated)
     }
 
     // --- Tasks ---
@@ -278,6 +568,46 @@ class AppRepository(private val appDao: AppDao) {
         }
         appDao.removeBannedUser(userId)
         logAdminAction("UNBAN_USER", "Unbanned user ID: $userId")
+    }
+
+    suspend fun syncAllTablesFromSupabase(url: String, anonKey: String) {
+        if (url.isBlank() || url.contains("your-project-id") || anonKey.length < 20) return
+        
+        // 1. Fetch Users
+        val usersJson = makeSupabaseRequest(url, anonKey, "users", "GET", query = "?select=*")
+        if (usersJson != null) {
+            val users = parseSupabaseUsers(usersJson)
+            for (user in users) {
+                appDao.insertUser(user)
+            }
+        }
+        
+        // 2. Fetch Videos
+        val videosJson = makeSupabaseRequest(url, anonKey, "videos", "GET", query = "?select=*")
+        if (videosJson != null) {
+            val videos = parseSupabaseVideos(videosJson)
+            for (video in videos) {
+                appDao.insertVideo(video)
+            }
+        }
+        
+        // 3. Fetch Comments
+        val commentsJson = makeSupabaseRequest(url, anonKey, "comments", "GET", query = "?select=*")
+        if (commentsJson != null) {
+            val comments = parseSupabaseComments(commentsJson)
+            for (comment in comments) {
+                appDao.insertComment(comment)
+            }
+        }
+        
+        // 4. Fetch Messages
+        val messagesJson = makeSupabaseRequest(url, anonKey, "messages", "GET", query = "?select=*")
+        if (messagesJson != null) {
+            val messages = parseSupabaseMessages(messagesJson)
+            for (message in messages) {
+                appDao.insertMessage(message)
+            }
+        }
     }
 
     // --- DB Prepulated Data ---
