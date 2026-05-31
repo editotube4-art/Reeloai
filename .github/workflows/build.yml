@@ -17,21 +17,18 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Make gradlew executable
+      - name: Create gradlew
         run: |
-          if [ ! -f gradlew ]; then
-            gradle wrapper
-          fi
+          cat > gradlew << 'EOF'
+          #!/bin/sh
+          exec gradle "$@"
+          EOF
           chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon
         env:
           JAVA_TOOL_OPTIONS: "-Xmx4g"
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dkotlin.incremental=false"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
